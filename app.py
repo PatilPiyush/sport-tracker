@@ -3,7 +3,9 @@ import pandas as pd
 from pathlib import Path
 import plotly.express as px
 
-st.set_page_config(page_title="Half Marathon Tracker", layout="wide")
+st.set_page_config(page_title="Multi Runner Tracker", layout="wide")
+
+RUNNERS = ["Harsh", "Vishal", "Praful", "Pipas"]
 
 PLAN = [
     {"week": 1, "monday": "Rest / mobility", "tuesday": "Easy run 5-7 km", "wednesday": "Easy strides", "thursday": "Rest or cross-training", "friday": "Easy run 5-8 km", "saturday": "Long run 9 km", "sunday": "Recovery walk / rest", "target_weekly_km": 22},
@@ -29,12 +31,12 @@ PACES = {
 }
 
 LOG_COLUMNS = [
-    "week", "date", "run_type", "distance_km", "avg_pace_min_per_km",
+    "runner", "week", "date", "run_type", "distance_km", "avg_pace_min_per_km",
     "avg_hr_bpm", "cadence_spm", "rpe", "notes"
 ]
 
-st.title("Half Marathon Trainer")
-st.caption("12-week plan, run log, pace zones, dashboard, and HTML export")
+st.title("Multi Runner Half Marathon Tracker")
+st.caption("12-week plan, multi-runner logging, pace zones, dashboard, and HTML export")
 
 plan_df = pd.DataFrame(PLAN)
 log_path = Path("run_log.csv")
@@ -56,7 +58,10 @@ def load_logs():
             df = pd.read_csv(log_path)
             if df.empty:
                 return pd.DataFrame(columns=LOG_COLUMNS)
-            return df
+            for col in LOG_COLUMNS:
+                if col not in df.columns:
+                    df[col] = pd.NA
+            return df[LOG_COLUMNS]
     except pd.errors.EmptyDataError:
         return pd.DataFrame(columns=LOG_COLUMNS)
     return pd.DataFrame(columns=LOG_COLUMNS)
@@ -70,7 +75,7 @@ def generate_html_report(logs: pd.DataFrame, plan_df: pd.DataFrame) -> str:
         for c in ["distance_km", "avg_hr_bpm", "cadence_spm", "rpe"]:
             if c in disp.columns:
                 disp[c] = pd.to_numeric(disp[c], errors="coerce")
-        weekly = disp.groupby("week", as_index=False).agg(
+        weekly = disp.groupby(["runner", "week"], as_index=False).agg(
             total_km=("distance_km", "sum"),
             avg_hr=("avg_hr_bpm", "mean"),
             avg_cadence=("cadence_spm", "mean"),
@@ -124,27 +129,75 @@ if page == "Dashboard":
             if c in logs.columns:
                 logs[c] = pd.to_numeric(logs[c], errors="coerce")
 
-        weekly = logs.groupby("week", as_index=False).agg(
-            total_km=("distance_km", "sum"),
-            avg_hr=("avg_hr_bpm", "mean"),
-            avg_cadence=("cadence_spm", "mean"),
-            avg_rpe=("rpe", "mean")
-        )
+        runner_filter = st.multiselect("Filter runners", RUNNERS, default=RUNNERS)
+        filtered = logs[logs["runner"].isin(runner_filter)].copy()
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Logged sessions", len(logs))
-        c2.metric("Total distance (km)", round(logs["distance_km"].sum(), 1))
-        c3.metric(
-            "Avg HR",
-            round(logs["avg_hr_bpm"].mean(), 0) if logs["avg_hr_bpm"].notna().any() else "-"
-        )
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Logged sessions", len(filtered))
+        c2.metric("Total distance (km)", round(filtered["distance_km"].sum(), 1) if not filtered.empty else 0)
+        c3.metric("Avg HR", round(filtered["avg_hr_bpm"].mean(), 0) if filtered["avg_hr_bpm"].notna().any() else "-")
+        c4.metric("Runners active", filtered["runner"].nunique() if not filtered.empty else 0)
 
-        st.dataframe(weekly, use_container_width=True, hide_index=True)
+        st.subheader("Log entry view")
+        st.dataframe(filtered.sort_values(["date", "runner"], ascending=[False, True]), use_container_width=True, hide_index=True)
 
-        fig = px.line(weekly, x="week", y="total_km", markers=True, title="Weekly Distance")
-        st.plotly_chart(fig, use_container_width=True)
+        if not filtered.empty:
+            view_mode = st.selectbox("Graph view", ["Per log", "Per date", "Per week"], index=2)
+            plot_df = filtered.copy()
+            plot_df["date"] = pd.to_datetime(plot_df["date"], errors="coerce")
 
-        html_report = generate_html_report(logs, plan_df)
+            if view_mode == "Per log":
+                plot_df = plot_df.sort_values(["date", "runner"]).reset_index(drop=True)
+                plot_df["entry"] = range(1, len(plot_df) + 1)
+                fig = px.line(
+                    plot_df,
+                    x="entry",
+                    y="distance_km",
+                    color="runner",
+                    markers=True,
+                    title="Distance per Log Entry"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            elif view_mode == "Per date":
+                daily = plot_df.copy()
+                daily["date"] = daily["date"].dt.date
+                daily = daily.groupby(["runner", "date"], as_index=False).agg(
+                    total_km=("distance_km", "sum"),
+                    avg_hr=("avg_hr_bpm", "mean"),
+                    avg_cadence=("cadence_spm", "mean"),
+                    avg_rpe=("rpe", "mean")
+                )
+                fig = px.line(
+                    daily,
+                    x="date",
+                    y="total_km",
+                    color="runner",
+                    markers=True,
+                    title="Date-wise Distance by Runner"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            else:
+                weekly = plot_df.groupby(["runner", "week"], as_index=False).agg(
+                    total_km=("distance_km", "sum"),
+                    avg_hr=("avg_hr_bpm", "mean"),
+                    avg_cadence=("cadence_spm", "mean"),
+                    avg_rpe=("rpe", "mean")
+                )
+                st.subheader("Weekly summary")
+                st.dataframe(weekly, use_container_width=True, hide_index=True)
+                fig = px.line(
+                    weekly,
+                    x="week",
+                    y="total_km",
+                    color="runner",
+                    markers=True,
+                    title="Weekly Distance by Runner"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+        html_report = generate_html_report(filtered, plan_df)
         st.download_button(
             "Download HTML report",
             data=html_report,
@@ -163,6 +216,7 @@ elif page == "Plan":
 else:
     st.subheader("Log a Session")
     with st.form("run_form"):
+        runner = st.selectbox("Runner", RUNNERS)
         week = st.number_input("Week", 1, 12, 1)
         date = st.date_input("Date")
         run_type = st.selectbox("Run Type", ["Easy", "Long run", "Tempo", "Intervals", "Recovery"])
@@ -176,6 +230,7 @@ else:
 
     if save:
         row = pd.DataFrame([{
+            "runner": runner,
             "week": week,
             "date": str(date),
             "run_type": run_type,
@@ -194,6 +249,20 @@ else:
 
     current = load_logs()
     if not current.empty:
-        st.dataframe(current, use_container_width=True, hide_index=True)
+        st.subheader("All log entries")
+        st.dataframe(current.sort_values(["date", "runner"], ascending=[False, True]), use_container_width=True, hide_index=True)
+
+        summary = current.copy()
+        for c in ["distance_km", "avg_hr_bpm", "cadence_spm", "rpe"]:
+            summary[c] = pd.to_numeric(summary[c], errors="coerce")
+
+        runner_summary = summary.groupby("runner", as_index=False).agg(
+            sessions=("date", "count"),
+            total_km=("distance_km", "sum"),
+            avg_hr=("avg_hr_bpm", "mean"),
+            avg_rpe=("rpe", "mean")
+        )
+        st.subheader("Runner summary")
+        st.dataframe(runner_summary, use_container_width=True, hide_index=True)
     else:
         st.info("No sessions logged yet.")
